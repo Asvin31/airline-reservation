@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -26,6 +27,7 @@ import com.airplane.repository.BookingRepo;
 import com.airplane.repository.FlightRepo;
 import com.airplane.service.AirplaneService;
 import com.airplane.service.GenerateAndSaveBooking;
+import com.airplane.util.CompareByDate;
 
 @Service
 public class AirplaneServiceImpl implements AirplaneService {
@@ -101,16 +103,22 @@ public class AirplaneServiceImpl implements AirplaneService {
 				if (changeBookingRequest.getStatus().equalsIgnoreCase("cancel")
 						&& (booking.get().getBookingStatus().equalsIgnoreCase("confirm")
 								|| booking.get().getBookingStatus().equalsIgnoreCase("inprogress"))) {
-					final String classType = booking.get().getTypeOfClass();
-					Flights flight = flightRepo.findByFlightIdAndPath(booking.get().getFlightPath(),
-							booking.get().getFlightId());
-					flight.getAvailable().setAvailableDetails(classType, Math.addExact(
-							flight.getAvailable().getAvailableDetails(classType), booking.get().getNumberOfTickets()));
-					flightRepo.save(flight);
-					booking.get().setBookingStatus(changeBookingRequest.getStatus());
-					booking.get().setLastModified(LocalDateTime.now());
-					bookingRepo.save(booking.get());
-					bookingResponse.setBooking(booking.get());
+					if (Boolean.TRUE.equals(isCancelEligible(booking.get().getBookingTime()))) {
+						final String classType = booking.get().getTypeOfClass();
+						Flights flight = flightRepo.findByFlightIdAndPath(booking.get().getFlightPath(),
+								booking.get().getFlightId());
+						flight.getAvailable().setAvailableDetails(classType,
+								Math.addExact(flight.getAvailable().getAvailableDetails(classType),
+										booking.get().getNumberOfTickets()));
+						flightRepo.save(flight);
+						booking.get().setBookingStatus(changeBookingRequest.getStatus());
+						booking.get().setLastModified(LocalDateTime.now());
+						bookingRepo.save(booking.get());
+						bookingResponse.setBooking(booking.get());
+					} else {
+						ErrorData errorData = new ErrorData(500, "Cancel not permitted after 48 hours of journey date");
+						bookingResponse.setErrorData(errorData);
+					}
 				} else if (changeBookingRequest.getStatus().equalsIgnoreCase("confirm")
 						&& booking.get().getBookingStatus().equalsIgnoreCase("inprogress")) {
 					booking.get().setBookingStatus(changeBookingRequest.getStatus());
@@ -133,18 +141,11 @@ public class AirplaneServiceImpl implements AirplaneService {
 		return bookingResponse;
 	}
 
-	private final Boolean checkStatus(String status) {
-		return ALLOWEDSTATUS.stream().anyMatch(status::equalsIgnoreCase);
-	}
-
-	private final Boolean checkSameStatus(ChangeBookingRequest changeBookingRequest, Booking booking) {
-		return changeBookingRequest.getStatus().equalsIgnoreCase(booking.getBookingStatus());
-	}
-
 	@Override
 	public UserBookingResponse getUsersBookings(String userId) {
 		UserBookingResponse userBookingResponse = new UserBookingResponse();
 		List<Booking> bookings = bookingRepo.findBookingByUser(userId);
+		Collections.sort(bookings, new CompareByDate());
 		if (bookings.size() > 1) {
 			Map<String, List<Booking>> bookingsMap = bookings.stream()
 					.collect(Collectors.groupingBy(Booking::getBookingStatus));
@@ -155,11 +156,12 @@ public class AirplaneServiceImpl implements AirplaneService {
 		}
 		return userBookingResponse;
 	}
-	
+
 	@Override
 	public AllBookingResponse allBookings() {
 		AllBookingResponse allBookingResponse = new AllBookingResponse();
 		List<Booking> bookings = bookingRepo.findAll();
+		Collections.sort(bookings, new CompareByDate());
 		if (bookings.size() > 1) {
 			Map<String, Map<String, List<Booking>>> allBookings = bookings.stream().collect(
 					Collectors.groupingBy(Booking::getBookingStatus, Collectors.groupingBy(Booking::getFlightName)));
@@ -172,4 +174,15 @@ public class AirplaneServiceImpl implements AirplaneService {
 
 	}
 
+	private final Boolean checkStatus(String status) {
+		return ALLOWEDSTATUS.stream().anyMatch(status::equalsIgnoreCase);
+	}
+
+	private final Boolean checkSameStatus(ChangeBookingRequest changeBookingRequest, Booking booking) {
+		return changeBookingRequest.getStatus().equalsIgnoreCase(booking.getBookingStatus());
+	}
+
+	private final Boolean isCancelEligible(LocalDateTime localDateTime) {
+		return LocalDateTime.now().isBefore(localDateTime.minusDays(2));
+	}
 }
